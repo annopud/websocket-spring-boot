@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Client with Dynamic Destinations</title>
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1.5.1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        label {
+            display: block;
+            margin: 10px 0 5px;
+            font-weight: bold;
+        }
+
+        input[type="text"],
+        textarea {
+            width: 100%;
+            padding: 10px;
+            font-size: 14px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+            margin-bottom: 10px;
+        }
+
+        button {
+            padding: 10px 15px;
+            font-size: 14px;
+            color: #fff;
+            background-color: #007bff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 5px;
+        }
+
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+
+        button:hover:not(:disabled) {
+            background-color: #0056b3;
+        }
+
+        .log {
+            border: 1px solid #ccc;
+            padding: 10px;
+            height: 200px;
+            overflow-y: auto;
+            margin-top: 10px;
+            background: #f9f9f9;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .destination {
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+        }
+
+        textarea {
+            resize: vertical;
+        }
+    </style>
+</head>
+<body>
+<h1>WebSocket Client with Dynamic Destinations</h1>
+<div class="form-group">
+    <label for="serverUrl">Server URL:</label>
+    <input type="text" id="serverUrl" value="http://localhost:8080/websocket" placeholder="Enter WebSocket server URL">
+</div>
+<div class="form-group">
+    <label for="connectionOptions">Connection Options (JSON):</label>
+    <textarea id="connectionOptions" rows="5" placeholder="Enter connection options as JSON">
+{
+    "connection-type": "client",
+    "id": "00143450095",
+    "token": "eyJhbGciOiJSUzI1NiJ9"
+}
+        </textarea>
+    <button id="formatConnectionOptionsButton">Format Connection Options</button>
+</div>
+<button id="connectButton">Connect</button>
+<button id="disconnectButton" disabled>Disconnect</button>
+<h2>Manage Destinations</h2>
+<div id="destinations"></div>
+<button id="addDestinationButton">Add Destination</button>
+<h2>Logs</h2>
+<div class="log" id="log"></div>
+
+<script>
+    let stompClient = null;
+    const subscriptions = {}; // Track subscriptions by destination ID
+
+    // Helper to log messages
+    function log(message) {
+        const logDiv = document.getElementById('log');
+        const p = document.createElement('p');
+        p.textContent = message;
+        logDiv.appendChild(p);
+        logDiv.scrollTop = logDiv.scrollHeight; // Auto-scroll to the bottom
+    }
+
+    // Format Connection Options JSON
+    document.getElementById('formatConnectionOptionsButton').addEventListener('click', function () {
+        const connectionOptionsTextarea = document.getElementById('connectionOptions');
+        try {
+            const parsed = JSON.parse(connectionOptionsTextarea.value);
+            connectionOptionsTextarea.value = JSON.stringify(parsed, null, 4);
+            log('Connection Options formatted as JSON.');
+        } catch (error) {
+            log('Error: Invalid JSON format in Connection Options.');
+        }
+    });
+
+    // Connect to the WebSocket server
+    document.getElementById('connectButton').addEventListener('click', function () {
+        const serverUrl = document.getElementById('serverUrl').value;
+        const optionsJson = document.getElementById('connectionOptions').value;
+
+        // Parse connection options JSON
+        let connectionOptions;
+        try {
+            connectionOptions = JSON.parse(optionsJson);
+        } catch (e) {
+            log('Error: Invalid JSON in connection options');
+            return;
+        }
+
+        const socket = new SockJS(serverUrl);
+        stompClient = Stomp.over(socket);
+
+        stompClient.connect(connectionOptions, function (frame) {
+            log('Connected: ' + frame);
+            document.getElementById('disconnectButton').disabled = false;
+            document.getElementById('connectButton').disabled = true;
+        }, function (error) {
+            log('Connection error: ' + error);
+        });
+    });
+
+    // Disconnect from the WebSocket server
+    document.getElementById('disconnectButton').addEventListener('click', function () {
+        if (stompClient !== null) {
+            stompClient.disconnect(() => {
+                log('Disconnected');
+                document.getElementById('disconnectButton').disabled = true;
+                document.getElementById('connectButton').disabled = false;
+            });
+            // Unsubscribe from all subscriptions
+            Object.keys(subscriptions).forEach((id) => {
+                subscriptions[id].unsubscribe();
+            });
+        }
+    });
+
+    // Add a destination block
+    document.getElementById('addDestinationButton').addEventListener('click', function () {
+        const destinationId = `destination-${Date.now()}`;
+        const destinationsContainer = document.getElementById('destinations');
+
+        const destinationDiv = document.createElement('div');
+        destinationDiv.classList.add('destination');
+        destinationDiv.id = destinationId;
+
+        destinationDiv.innerHTML = `
+            <label>Send to Destination:</label>
+            <input type="text" placeholder="Enter send destination" id="send-${destinationId}">
+            <label>Message:</label>
+            <textarea rows="3" placeholder="Enter message" id="message-${destinationId}"></textarea>
+            <button onclick="formatJson('${destinationId}')">Format as JSON</button>
+            <button onclick="sendMessage('${destinationId}')">Send</button>
+            <label>Subscribe Path:</label>
+            <input type="text" placeholder="Enter subscribe path" id="subscribe-${destinationId}">
+            <button onclick="subscribe('${destinationId}')">Subscribe</button>
+            <button onclick="unsubscribe('${destinationId}')" disabled>Unsubscribe</button>
+            <button onclick="removeDestination('${destinationId}')">Remove</button>
+        `;
+
+        destinationsContainer.appendChild(destinationDiv);
+    });
+
+    // Send a message
+    function sendMessage(destinationId) {
+        const destination = document.getElementById(`send-${destinationId}`).value;
+        const message = document.getElementById(`message-${destinationId}`).value;
+
+        if (stompClient && destination && message) {
+            stompClient.send(destination, {}, message);
+            log(`Message sent to ${destination}: ${message}`);
+        } else {
+            log('Error: Unable to send message. Check connection and input fields.');
+        }
+    }
+
+    // Format JSON in the message textarea
+    function formatJson(destinationId) {
+        const messageTextarea = document.getElementById(`message-${destinationId}`);
+        try {
+            const parsed = JSON.parse(messageTextarea.value);
+            messageTextarea.value = JSON.stringify(parsed, null, 4);
+            log('Message formatted as JSON.');
+        } catch (error) {
+            log('Error: Invalid JSON format.');
+        }
+    }
+
+    // Subscribe to a destination
+    function subscribe(destinationId) {
+        const subscribePath = document.getElementById(`subscribe-${destinationId}`).value;
+
+        if (stompClient && subscribePath) {
+            if (subscriptions[destinationId]) {
+                log('Already subscribed to this destination.');
+                return;
+            }
+
+            const subscription = stompClient.subscribe(subscribePath, function (message) {
+                log(`Received from ${subscribePath}: ${message.body}`);
+            });
+
+            subscriptions[destinationId] = subscription;
+            log(`Subscribed to ${subscribePath}`);
+            document.querySelector(`#${destinationId} button[onclick*="unsubscribe"]`).disabled = false;
+        } else {
+            log('Error: Unable to subscribe. Check connection and input fields.');
+        }
+    }
+
+    // Unsubscribe from a destination
+    function unsubscribe(destinationId) {
+        if (subscriptions[destinationId]) {
+            subscriptions[destinationId].unsubscribe();
+            delete subscriptions[destinationId];
+            log('Unsubscribed from the destination.');
+            document.querySelector(`#${destinationId} button[onclick*="unsubscribe"]`).disabled = true;
+        } else {
+            log('Error: No active subscription to unsubscribe.');
+        }
+    }
+
+    // Remove a destination block
+    function removeDestination(destinationId) {
+        unsubscribe(destinationId); // Ensure subscription is removed
+        const destinationDiv = document.getElementById(destinationId);
+        destinationDiv.remove();
+        log('Removed destination block.');
+    }
+</script>
+</body>
+</html>
